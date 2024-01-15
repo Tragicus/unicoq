@@ -34,7 +34,7 @@ let is_init l = match !l with Initial -> true | _ -> false
 let _currentNode l = !l
 
 let rec pad l = 
-  if l <= 0 then () else (Printf.printf "_"; pad (l-1))
+  if l <= 0 then "" else ("_" ^ pad (l-1))
 
 let rec depth l =
   match !l with
@@ -43,16 +43,13 @@ let rec depth l =
 
 let print_node (s, (conv_t, c1, c2)) =
   let conv = if conv_t = Conversion.CONV then "=?=" else "=<=" in
-  Printf.printf "%s %s %s (%s)" c1 conv c2 s;
-  flush stdout
+  Printf.sprintf "%s %s %s (%s)" c1 conv c2 s
 
 let newNode print v l =
-  if print then
-    begin
-      pad (depth l);
-      print_node v;
-      output_string stdout "\n";
-    end;
+  if print then begin
+    Feedback.msg_debug (Pp.str
+      (pad (depth l) ^ print_node v))
+  end;
   let n = ref (Node (v, l, true, [])) in
   match !l with
   | Initial -> n
@@ -80,12 +77,8 @@ let rec print_to_stdout i l =
   match !l with
   | Initial -> ()
   | Node (n, _, st, ls) ->
-    pad i;
-    print_node n;
-    if st then
-      output_string stdout " OK\n"
-    else
-      output_string stdout " ERR\n";
+    Feedback.msg_debug (Pp.str(pad i ^ print_node n ^
+      if st then " OK" else " ERR"));
     List.iter (print_to_stdout (i+1)) (List.rev ls)
 
 let print_to_stdout l = print_to_stdout 0 (to_parent l)
@@ -114,8 +107,8 @@ let print_latex s p l =
 
 let print_latex s p l =
   if s = "" then
-    Printf.printf "Warning: no LaTex file set with [Set Unicoq LaTex File 'file']. No LaTex output will be generated.\n"
+    Feedback.msg_warning (Pp.str "Warning: no LaTex file set with [Set Unicoq LaTex File 'file']. No LaTex output will be generated.")
   else
     try
       print_latex s p (to_parent l)
-    with Sys_error p -> Printf.printf "Logger error: '%s'\n" p
+    with Sys_error p -> Feedback.msg_warning (Pp.str (Printf.sprintf "Logger error: '%s'" p))

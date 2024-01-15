@@ -325,18 +325,14 @@ let log_eq_spine env rule conv_t t1 t2 (l, sigma as dsigma) =
 
 let debug_str s _l =
   if !debug then
-    begin
-      Printf.printf "%s\n" s;
-      flush_all ()
-    end
+    Feedback.msg_debug (Pp.str s)
   else
     ()
 
 let debug_eq env sigma t c1 c2 _l =
   let s1 = string_of_ppcmds (Printer.pr_econstr_env env sigma (applist c1)) in
   let s2 = string_of_ppcmds (Printer.pr_econstr_env env sigma (applist c2)) in
-  Printf.printf "%s %s %s\n" s1 (if t == C.CONV then "=?=" else "<?=") s2;
-  flush_all ()
+  Feedback.msg_debug (Pp.str (Printf.sprintf "%s %s %s" s1 (if t == C.CONV then "=?=" else "<?=") s2))
 
 let print_eq f (conv_t, c1, c2) =
   output_string f "\\lstinline{";
@@ -986,7 +982,7 @@ module struct
     if !dump then debug_eq env sigma conv_t t t' 0;
     try_conv conv_t env t t' (dbg, sigma) ||= fun dbg ->
       try_hash env t t' (dbg, sigma) &&= fun (dbg, sigma) ->
-        let res =
+        let res = 
           if isEvar sigma c || isEvar sigma c' then
             one_is_meta dbg conv_t env sigma options t t'
           else
