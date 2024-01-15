@@ -4,6 +4,13 @@
 (*                    Matthieu Sozeau <mattam@mattam.org>. *)
 (***********************************************************)
 
+let rec split_at n acc l =
+  if n = 0 then (List.rev acc, l)
+  else match l with
+  | [] -> (List.rev acc, l)
+  | h :: t -> split_at (n-1) (h :: acc) t
+let split_at n l = split_at n [] l
+
 open Pp
 open EConstr
 open Names
@@ -982,7 +989,7 @@ module struct
     if !dump then debug_eq env sigma conv_t t t' 0;
     try_conv conv_t env t t' (dbg, sigma) ||= fun dbg ->
       try_hash env t t' (dbg, sigma) &&= fun (dbg, sigma) ->
-        let res = 
+        let res = try_simplify_proj conv_t env t t' sigma dbg ||= (fun dbg ->
           if isEvar sigma c || isEvar sigma c' then
             one_is_meta dbg conv_t env sigma options t t'
           else
@@ -991,7 +998,7 @@ module struct
               ||= try_canonical_structures env t t' sigma
               ||= try_app_fo conv_t env t t' sigma
               ||= cont conv_t env t t' sigma
-            end
+            end)
         in
         if not (is_success (snd res)) && use_hash () then
           Hashtbl.add tbl (sigma, env, t, t') true;
@@ -1046,6 +1053,64 @@ module struct
       match !run_function env sigma1 f with
       | Some (sigma2, v') -> unify' env (decompose_app_list sigma2 v) (decompose_app_list sigma2 v') (dbg, sigma2)
       | _ -> (dbg, ES.UnifFailure (sigma1, PE.NotSameHead))
+
+  and try_simplify_proj conv_t env ?(stuck=NotStucked) (c, l as t) (c', l' as t') sigma0 dbg =
+      match (kind sigma0 c, kind sigma0 c') with
+      | _ , Proj (p, r, c) when reduce_right && stuck != StuckedRight ->
+      begin
+        let c = RO.whd_all env sigma0 c in (* reduce argument *)
+         try let (hd, args) = destApp sigma0 c in
+          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
+             it must be of [p]'s record type. *)
+          if isConstruct sigma0 hd then report (
+            log_eq_spine env "Proj-DeltaR" conv_t t t' (dbg, sigma0) &&=
+            unify' ~conv_t env t (evar_apprec P.flags.open_ts env sigma0 (args.(Projection.npars p + Projection.arg p), l')))
+         else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+      end
+    | Proj (p, r, c), _ when reduce_left && stuck != StuckedLeft ->
+      begin
+        let c = RO.whd_all env sigma0 c in (* reduce argument *)
+          try let (hd, args) = destApp sigma0 c in
+          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
+             it must be of [p]'s record type. *)
+          if isConstruct sigma0 hd then report (
+            log_eq_spine env "Proj-DeltaL" conv_t t t' (dbg, sigma0) &&=
+            unify' ~conv_t env (evar_apprec P.flags.open_ts env sigma0 (args.(Projection.npars p + Projection.arg p), l)) t')
+          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+      end
+    | _, Const (cn, _) when reduce_right && stuck != StuckedRight && Structures.Structure.is_projection cn && List.length l' >= Structures.Structure.projection_nparams cn + 1 ->
+      begin
+        match split_at (Structures.Structure.projection_nparams cn) l' with
+        | (_, []) -> raise Not_found
+        | (r, c :: l') -> begin
+          let c = RO.whd_all env sigma0 c in (* reduce argument *)
+          try let (hd, args) = destApp sigma0 c in
+          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
+             it must be of [p]'s record type. *)
+          if isConstruct sigma0 hd then report (
+            log_eq_spine env "Cons-DeltaNotStuckL" conv_t t t' (dbg, sigma0) &&=
+            unify' ~conv_t env t (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t')))
+          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+      end end
+    | Const (cn, _), _ when reduce_left && stuck != StuckedLeft && Structures.Structure.is_projection cn && List.length l >= Structures.Structure.projection_nparams cn + 1 ->
+      begin
+        match split_at (Structures.Structure.projection_nparams cn) l with
+        | (_, []) -> raise Not_found
+        | (r, c :: l) -> begin
+          let c = RO.whd_all env sigma0 c in (* reduce argument *)
+          try let (hd, args) = destApp sigma0 c in
+          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
+             it must be of [p]'s record type. *)
+          if isConstruct sigma0 hd then report (
+            log_eq_spine env "Cons-DeltaNotStuckL" conv_t t t' (dbg, sigma0) &&=
+            unify' ~conv_t env (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t)) t')
+          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+      end end
+    | _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
 
   and try_canonical_structures env (c, _ as t) (c', _ as t') sigma dbg =
     if (isConst sigma c || isConst sigma c' || isProj sigma c || isProj sigma c')
