@@ -1019,26 +1019,12 @@ module struct
     match unify_constr ~conv_t:conv_t env t t' (Logger.init, sigma0) with
     | (log, ES.Success sigma') ->
       if get_debug () && interesting log then begin
-         (* Feedback.msg_info (Pp.str "unification succeded, starting evar_map:");
-         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma0); *)
-         Feedback.msg_info (Pp.str "unification succeded:");
-         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t)));
-         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t')));
          Logger.print_to_stdout log;
-         (* Feedback.msg_info (Pp.str "ending evar_map:");
-         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma'); *)
       end;
       ES.Success sigma'
     | (log, ES.UnifFailure (sigma, e)) ->
       if get_debug () then begin
-         (* Feedback.msg_info (Pp.str "unification failed, starting evar_map:");
-         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma0); *)
-         Feedback.msg_info (Pp.str "unification failed:");
-         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t)));
-         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t')));
          Logger.print_to_stdout log;
-         (* Feedback.msg_info (Pp.str "ending evar_map:");
-         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma); *)
       end;
       ES.UnifFailure (sigma, e)
 
@@ -1116,30 +1102,25 @@ module struct
         | (_, []) -> raise Not_found
         | (r, c :: l) -> begin
           let c = RO.whd_all env sigma0 c in (* reduce argument *)
-          if get_debug () then (
-            Feedback.msg_info (Pp.str "try unfolding left, is c a constructor?");
-            Feedback.msg_info (Printer.pr_econstr_env (Global.env ()) sigma0 c));
           try let (hd, args) = destApp sigma0 c in
-          if get_debug () then (Feedback.msg_info(Pp.str "yes"); Feedback.msg_info (Printer.pr_econstr_env (Global.env ()) sigma0 hd));
           (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
              it must be of [p]'s record type. *)
           if isConstruct sigma0 hd then report (
             log_eq_spine env "Cons-DeltaNotStuckL" conv_t t t' (dbg, sigma0) &&=
             unify' ~conv_t env (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t)) t')
           else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
-         with _ ->
-            if get_debug () then Feedback.msg_info(Pp.str "no");
-            (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
       end end
     | _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead)))
 
   and try_canonical_structures env (c, _ as t) (c', _ as t') sigma dbg =
     if (isConst sigma c || isConst sigma c' || isProj sigma c || isProj sigma c')
         && not (eq_constr sigma c c') then
-      try conv_record dbg env sigma t t'
-      with ProjectionNotFound ->
-      try conv_record dbg env sigma t' t
-      with ProjectionNotFound -> (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
+      (try conv_record dbg env sigma t t'
+      with ProjectionNotFound -> (dbg, ES.UnifFailure (sigma, PE.NotSameHead))) ||=
+      (fun dbg -> 
+         try conv_record dbg env sigma t' t
+         with ProjectionNotFound -> (dbg, ES.UnifFailure (sigma, PE.NotSameHead)))
     else
       (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
 
