@@ -308,17 +308,16 @@ let latexify s =
   let s = global_replace (regexp "__:=") "" s in (* remove useless names in evar subs *)
   global_replace (Str.regexp "~") "\\~" s
 
+let ppcmd_of env sigma (t : EConstr.t) =
+   try Printer.pr_econstr_env env sigma t
+   (* This is really suspicious as it will hide a serious bug. *)
+   with _ -> Constr.debug_print (EConstr.Unsafe.to_constr t)
 let log_eq env rule conv_t t1 t2 (l, sigma) =
   if not (get_debug () || !trace) then
     (l, ES.Success sigma)
-  else
-    let ppcmd_of env (t : EConstr.t) =
-      try Printer.pr_econstr_env env sigma t
-      (* This is really suspicious as it will hide a serious bug. *)
-      with _ -> Constr.debug_print (EConstr.Unsafe.to_constr t)
-    in
-    let str1 = Pp.string_of_ppcmds (ppcmd_of env t1) in
-    let str2 = Pp.string_of_ppcmds (ppcmd_of env t2) in
+  else 
+    let str1 = Pp.string_of_ppcmds (ppcmd_of env sigma t1) in
+    let str2 = Pp.string_of_ppcmds (ppcmd_of env sigma t2) in
     let str1 = latexify str1 in
     let str2 = latexify str2 in
     let l = Logger.newNode !trace (rule, (conv_t, str1, str2)) l in
@@ -1019,15 +1018,28 @@ module struct
     if use_hash () then Hashtbl.clear tbl;
     match unify_constr ~conv_t:conv_t env t t' (Logger.init, sigma0) with
     | (log, ES.Success sigma') ->
-      if get_debug () && interesting log then
-        begin
-          Logger.print_latex !latex_file print_eq log;
-          Logger.print_to_stdout log;
-        end
-      else ();
+      if get_debug () && interesting log then begin
+         (* Feedback.msg_info (Pp.str "unification succeded, starting evar_map:");
+         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma0); *)
+         Feedback.msg_info (Pp.str "unification succeded:");
+         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t)));
+         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t')));
+         Logger.print_to_stdout log;
+         (* Feedback.msg_info (Pp.str "ending evar_map:");
+         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma'); *)
+      end;
       ES.Success sigma'
     | (log, ES.UnifFailure (sigma, e)) ->
-      if get_debug () then Logger.print_to_stdout log;
+      if get_debug () then begin
+         (* Feedback.msg_info (Pp.str "unification failed, starting evar_map:");
+         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma0); *)
+         Feedback.msg_info (Pp.str "unification failed:");
+         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t)));
+         Feedback.msg_info (Pp.str (Pp.string_of_ppcmds (ppcmd_of env sigma0 t')));
+         Logger.print_to_stdout log;
+         (* Feedback.msg_info (Pp.str "ending evar_map:");
+         Feedback.msg_info (Termops.pr_evar_map ~with_univs:!Detyping.print_universes None (Global.env ()) sigma); *)
+      end;
       ES.UnifFailure (sigma, e)
 
   (** (Beta) This is related to Mtac, and is part of my thesis. The
@@ -1055,8 +1067,8 @@ module struct
       | _ -> (dbg, ES.UnifFailure (sigma1, PE.NotSameHead))
 
   and try_simplify_proj conv_t env ?(stuck=NotStucked) (c, l as t) (c', l' as t') sigma0 dbg =
-      match (kind sigma0 c, kind sigma0 c') with
-      | _ , Proj (p, r, c) when reduce_right && stuck != StuckedRight ->
+      (match kind sigma0 c' with
+      | Proj (p, r, c) when reduce_right && stuck != StuckedRight ->
       begin
         let c = RO.whd_all env sigma0 c in (* reduce argument *)
          try let (hd, args) = destApp sigma0 c in
@@ -1068,7 +1080,25 @@ module struct
          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
          with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
       end
-    | Proj (p, r, c), _ when reduce_left && stuck != StuckedLeft ->
+    | Const (cn, _) when reduce_right && stuck != StuckedRight && Structures.Structure.is_projection cn && List.length l' >= Structures.Structure.projection_nparams cn + 1 ->
+      begin
+        match split_at (Structures.Structure.projection_nparams cn) l' with
+        | (_, []) -> raise Not_found
+        | (r, c :: l') -> begin
+          let c = RO.whd_all env sigma0 c in (* reduce argument *)
+          try let (hd, args) = destApp sigma0 c in
+          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
+             it must be of [p]'s record type. *)
+          if isConstruct sigma0 hd then report (
+            log_eq_spine env "Cons-DeltaNotStuckR" conv_t t t' (dbg, sigma0) &&=
+            unify' ~conv_t env t (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t')))
+          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+      end end
+    | _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))) ||=
+  (fun dbg -> 
+    match kind sigma0 c with
+    | Proj (p, r, c) when reduce_left && stuck != StuckedLeft ->
       begin
         let c = RO.whd_all env sigma0 c in (* reduce argument *)
           try let (hd, args) = destApp sigma0 c in
@@ -1080,37 +1110,28 @@ module struct
           else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
          with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
       end
-    | _, Const (cn, _) when reduce_right && stuck != StuckedRight && Structures.Structure.is_projection cn && List.length l' >= Structures.Structure.projection_nparams cn + 1 ->
-      begin
-        match split_at (Structures.Structure.projection_nparams cn) l' with
-        | (_, []) -> raise Not_found
-        | (r, c :: l') -> begin
-          let c = RO.whd_all env sigma0 c in (* reduce argument *)
-          try let (hd, args) = destApp sigma0 c in
-          (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
-             it must be of [p]'s record type. *)
-          if isConstruct sigma0 hd then report (
-            log_eq_spine env "Cons-DeltaNotStuckL" conv_t t t' (dbg, sigma0) &&=
-            unify' ~conv_t env t (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t')))
-          else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
-         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
-      end end
-    | Const (cn, _), _ when reduce_left && stuck != StuckedLeft && Structures.Structure.is_projection cn && List.length l >= Structures.Structure.projection_nparams cn + 1 ->
+    | Const (cn, _) when reduce_left && stuck != StuckedLeft && Structures.Structure.is_projection cn && List.length l >= Structures.Structure.projection_nparams cn + 1 ->
       begin
         match split_at (Structures.Structure.projection_nparams cn) l with
         | (_, []) -> raise Not_found
         | (r, c :: l) -> begin
           let c = RO.whd_all env sigma0 c in (* reduce argument *)
+          if get_debug () then (
+            Feedback.msg_info (Pp.str "try unfolding left, is c a constructor?");
+            Feedback.msg_info (Printer.pr_econstr_env (Global.env ()) sigma0 c));
           try let (hd, args) = destApp sigma0 c in
+          if get_debug () then (Feedback.msg_info(Pp.str "yes"); Feedback.msg_info (Printer.pr_econstr_env (Global.env ()) sigma0 hd));
           (* Assuming [Proj (p, c)] is well-typed, if [hd] is a constructor,
              it must be of [p]'s record type. *)
           if isConstruct sigma0 hd then report (
             log_eq_spine env "Cons-DeltaNotStuckL" conv_t t t' (dbg, sigma0) &&=
             unify' ~conv_t env (evar_apprec P.flags.open_ts env sigma0 (get_def_app_stack sigma0 env t)) t')
           else (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
-         with _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+         with _ ->
+            if get_debug () then Feedback.msg_info(Pp.str "no");
+            (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
       end end
-    | _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
+    | _ -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead)))
 
   and try_canonical_structures env (c, _ as t) (c', _ as t') sigma dbg =
     if (isConst sigma c || isConst sigma c' || isProj sigma c || isProj sigma c')
@@ -1123,6 +1144,7 @@ module struct
       (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
 
   and conv_record dbg env evd t t' =
+   try
     let (evd,c,bs,(params,params1),(us,us2),(ts,ts1),c1,(n,t2)) = check_conv_record env evd t t' in
     let (evd',ks,_) =
       List.fold_left
@@ -1142,6 +1164,12 @@ module struct
       ise_list2 (fun u1 u -> unify_constr env u1 (substl ks u)) us2 us &&=
       unify' env (decompose_app_list evd' c1) (c,(List.rev ks)) &&=
       ise_list2 (unify_constr env) ts ts1)
+   with ProjectionNotFound -> let sigma = evd in
+      match Evarconv.apply_hooks env sigma (EConstr.applist t) (EConstr.applist t') with
+      | None -> raise ProjectionNotFound
+      | Some sigma' -> report (
+         log_eq_spine env "CS" C.CONV t t' (dbg, sigma') &&=
+         unify' env t t')
 
   and try_app_fo conv_t env (c, l as t) (c', l' as t') sigma dbg =
     let nparams = List.length l in
